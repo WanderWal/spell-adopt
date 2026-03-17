@@ -1,4 +1,27 @@
 const MODULE_ID = "spell-adopt";
+const SPELL_COLLECTION_KEYS = new Set([
+  "spell",
+  "spells",
+  "spelllist",
+  "spelllists",
+  "entries",
+  "items",
+  "results",
+  "documents",
+  "references",
+]);
+const SPELL_REFERENCE_KEYS = new Set([
+  "uuid",
+  "sourceid",
+  "pack",
+  "collection",
+  "documentcollection",
+  "id",
+  "_id",
+  "itemid",
+  "documentid",
+  "value",
+]);
 
 Hooks.on("getHeaderControlsApplicationV2", (app, controls) => {
   if (!Array.isArray(controls)) return;
@@ -11,9 +34,9 @@ Hooks.on("getHeaderControlsApplicationV2", (app, controls) => {
     label: game.i18n.localize(`${MODULE_ID}.button.replace`),
     visible: true,
     onClick: async () => {
-      const journal = app?.document;
-      if (!journal) return;
-      SpellCompendiumPickerApp.open({ journal });
+      const target = app?.document;
+      if (!target) return;
+      SpellCompendiumPickerApp.open({ target });
     },
   });
 });
@@ -30,9 +53,9 @@ Hooks.on("getJournalSheetHeaderButtons", (sheet, buttons) => {
     icon: "fas fa-wand-magic-sparkles",
     label: game.i18n.localize(`${MODULE_ID}.button.replace`),
     onclick: async () => {
-      const journal = sheet?.document;
-      if (!journal) return;
-      SpellCompendiumPickerApp.open({ journal });
+      const target = sheet?.document;
+      if (!target) return;
+      SpellCompendiumPickerApp.open({ target });
     },
   });
 });
@@ -40,8 +63,17 @@ Hooks.on("getJournalSheetHeaderButtons", (sheet, buttons) => {
 function shouldShowControl(app) {
   if (!game.user?.isGM) return false;
 
-  const journal = app?.document;
-  return journal?.documentName === "JournalEntry";
+  const document = app?.document;
+  if (!document) return false;
+
+  if (isSpellListPage(document)) return true;
+  if (document.documentName !== "JournalEntry") return false;
+
+  return document.pages?.some((page) => page.type === "spells") ?? false;
+}
+
+function isSpellListPage(document) {
+  return document?.documentName === "JournalEntryPage" && document.type === "spells";
 }
 
 class SpellCompendiumPickerApp extends foundry.applications.api.ApplicationV2 {
@@ -54,7 +86,7 @@ class SpellCompendiumPickerApp extends foundry.applications.api.ApplicationV2 {
 
   constructor(options = {}) {
     super(options);
-    this.journal = options.journal ?? null;
+    this.target = options.target ?? null;
   }
 
   get title() {
@@ -129,7 +161,7 @@ class SpellCompendiumPickerApp extends foundry.applications.api.ApplicationV2 {
       if (submitButton) submitButton.disabled = true;
 
       try {
-        await replaceJournalSpellLinks(this.journal, packCollection);
+        await replaceSpellListTarget(this.target, packCollection);
         this.close();
       } finally {
         if (submitButton) submitButton.disabled = false;
@@ -170,6 +202,25 @@ function parseCompendiumUuid(uuid) {
   return null;
 }
 
+function buildSpellReferenceFields(replacementUuid) {
+  const parsed = parseCompendiumUuid(replacementUuid);
+  if (!parsed) {
+    return { uuid: replacementUuid, sourceId: replacementUuid };
+  }
+
+  return {
+    uuid: replacementUuid,
+    sourceId: replacementUuid,
+    pack: parsed.pack,
+    collection: parsed.pack,
+    documentCollection: parsed.pack,
+    id: parsed.id,
+    _id: parsed.id,
+    itemId: parsed.id,
+    documentId: parsed.id,
+  };
+}
+
 function getSpellMapFromIndex(index, packCollection) {
   const map = new Map();
 
@@ -184,43 +235,6 @@ function getSpellMapFromIndex(index, packCollection) {
   }
 
   return map;
-}
-
-function replaceLinksInContent(content, spellMap) {
-  if (!content) return { content, replacements: 0 };
-
-  let replacements = 0;
-
-  const wrapper = document.createElement("div");
-  wrapper.innerHTML = content;
-
-  const links = wrapper.querySelectorAll("a.content-link, a.entity-link");
-  for (const link of links) {
-    const label = link.textContent?.trim();
-    if (!label) continue;
-
-    const replacementUuid = spellMap.get(normalizeName(label));
-    if (!replacementUuid) continue;
-
-    link.dataset.uuid = replacementUuid;
-    delete link.dataset.pack;
-    delete link.dataset.id;
-
-    replacements += 1;
-  }
-
-  let updated = wrapper.innerHTML;
-
-  updated = updated.replace(/@(UUID|Compendium)\[([^\]]+)\](?:\{([^}]+)\})?/gi, (match, _kind, _target, label) => {
-    if (!label) return match;
-    const replacementUuid = spellMap.get(normalizeName(label));
-    if (!replacementUuid) return match;
-
-    replacements += 1;
-    return `@UUID[${replacementUuid}]{${label}}`;
-  });
-
-  return { content: updated, replacements };
 }
 
 async function getSpellNameFromUuid(uuid, cache) {
@@ -242,13 +256,34 @@ async function getSpellNameFromUuid(uuid, cache) {
   return resolvedName;
 }
 
-async function replaceSpellReferencesInValue(value, spellMap, cache) {
+function isSpellCollectionKey(key) {
+  return SPELL_COLLECTION_KEYS.has(String(key ?? "").toLowerCase());
+}
+
+function isSpellReferenceKey(key) {
+  return SPELL_REFERENCE_KEYS.has(String(key ?? "").toLowerCase());
+}
+
+function objectLooksLikeSpellReference(value) {
+  if (!value || typeof value !== "object") return false;
+
+  return Object.keys(value).some((key) => isSpellReferenceKey(key))
+    || [value.name, value.label, value.title, value.spellName].some((entry) => typeof entry === "string" && entry.trim());
+}
+
+async function replaceSpellReferencesInValue(value, spellMap, cache, context = {}) {
+  const key = String(context.key ?? "");
+  const insideSpellCollection = Boolean(context.insideSpellCollection) || isSpellCollectionKey(key);
+
   if (Array.isArray(value)) {
     let replacements = 0;
     const updated = [];
 
     for (const entry of value) {
-      const result = await replaceSpellReferencesInValue(entry, spellMap, cache);
+      const result = await replaceSpellReferencesInValue(entry, spellMap, cache, {
+        key,
+        insideSpellCollection,
+      });
       replacements += result.replacements;
       updated.push(result.value);
     }
@@ -257,42 +292,18 @@ async function replaceSpellReferencesInValue(value, spellMap, cache) {
   }
 
   if (value && typeof value === "object") {
+    const objectIsSpellReference = objectLooksLikeSpellReference(value);
     const possibleName = value.name ?? value.label ?? value.title ?? value.spellName ?? null;
     const matchedByName = spellMap.get(normalizeName(possibleName));
 
-    if (matchedByName) {
+    if (matchedByName && (insideSpellCollection || objectIsSpellReference)) {
       let replacements = 0;
       const updated = foundry.utils.deepClone(value);
-      const parsed = parseCompendiumUuid(matchedByName);
+      const referenceFields = buildSpellReferenceFields(matchedByName);
 
-      if (typeof updated.uuid === "string" && updated.uuid !== matchedByName) {
-        updated.uuid = matchedByName;
-        replacements += 1;
-      }
-
-      if (typeof updated.sourceId === "string" && updated.sourceId !== matchedByName) {
-        updated.sourceId = matchedByName;
-        replacements += 1;
-      }
-
-      if (parsed) {
-        if (typeof updated.pack === "string" && updated.pack !== parsed.pack) {
-          updated.pack = parsed.pack;
-          replacements += 1;
-        }
-
-        if (typeof updated.collection === "string" && updated.collection !== parsed.pack) {
-          updated.collection = parsed.pack;
-          replacements += 1;
-        }
-
-        if (typeof updated.id === "string" && updated.id !== parsed.id) {
-          updated.id = parsed.id;
-          replacements += 1;
-        }
-
-        if (typeof updated.itemId === "string" && updated.itemId !== parsed.id) {
-          updated.itemId = parsed.id;
+      for (const [key, fieldValue] of Object.entries(referenceFields)) {
+        if (updated[key] !== fieldValue) {
+          updated[key] = fieldValue;
           replacements += 1;
         }
       }
@@ -306,7 +317,10 @@ async function replaceSpellReferencesInValue(value, spellMap, cache) {
     const updated = {};
 
     for (const [key, child] of Object.entries(value)) {
-      const result = await replaceSpellReferencesInValue(child, spellMap, cache);
+      const result = await replaceSpellReferencesInValue(child, spellMap, cache, {
+        key,
+        insideSpellCollection,
+      });
       replacements += result.replacements;
       updated[key] = result.value;
     }
@@ -320,6 +334,11 @@ async function replaceSpellReferencesInValue(value, spellMap, cache) {
 
   let replacements = 0;
   let updated = value;
+
+  const matchedByName = spellMap.get(normalizeName(updated));
+  if ((insideSpellCollection || isSpellReferenceKey(key)) && matchedByName && matchedByName !== updated) {
+    return { value: matchedByName, replacements: 1 };
+  }
 
   updated = updated.replace(/@(UUID|Compendium)\[([^\]]+)\](?:\{([^}]+)\})?/gi, (match, _kind, _target, label) => {
     if (!label) return match;
@@ -344,11 +363,11 @@ async function replaceSpellReferencesInValue(value, spellMap, cache) {
   return { value: updated, replacements };
 }
 
-async function replaceJournalSpellLinks(journal, packCollection) {
+async function getSpellMapForPack(packCollection) {
   const pack = game.packs.get(packCollection);
   if (!pack) {
     ui.notifications.error(game.i18n.localize(`${MODULE_ID}.notifications.missingPack`));
-    return;
+    return null;
   }
 
   const index = await pack.getIndex({ fields: ["name", "type"] });
@@ -356,52 +375,84 @@ async function replaceJournalSpellLinks(journal, packCollection) {
 
   if (!spellMap.size) {
     ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.noSpellEntries`));
+    return null;
+  }
+
+  return spellMap;
+}
+
+async function replaceSpellListPage(page, spellMap, uuidNameCache) {
+  const currentData = page.toObject();
+  const result = await replaceSpellReferencesInValue(currentData, spellMap, uuidNameCache, {
+    key: "page",
+    insideSpellCollection: false,
+  });
+
+  if (!result.replacements) return 0;
+
+  const updateData = foundry.utils.diffObject(currentData, result.value);
+  delete updateData._id;
+
+  if (!Object.keys(updateData).length) return 0;
+
+  await page.update(updateData);
+  return result.replacements;
+}
+
+async function replaceSpellListTarget(target, packCollection) {
+  const spellMap = await getSpellMapForPack(packCollection);
+  if (!spellMap) return;
+
+  const uuidNameCache = new Map();
+
+  if (isSpellListPage(target)) {
+    const replacementCount = await replaceSpellListPage(target, spellMap, uuidNameCache);
+
+    if (!replacementCount) {
+      ui.notifications.info(game.i18n.localize(`${MODULE_ID}.notifications.noChanges`));
+      return;
+    }
+
+    ui.notifications.info(
+      game.i18n.format(`${MODULE_ID}.notifications.success`, {
+        count: replacementCount,
+        pages: 1,
+      })
+    );
     return;
   }
 
-  const pageUpdates = [];
-  let replacementCount = 0;
-  const uuidNameCache = new Map();
-
-  for (const page of journal.pages.contents) {
-    if (page.type === "spells") {
-      const currentSystem = foundry.utils.deepClone(page.system ?? {});
-      const result = await replaceSpellReferencesInValue(currentSystem, spellMap, uuidNameCache);
-
-      if (!result.replacements) continue;
-
-      replacementCount += result.replacements;
-      pageUpdates.push({
-        _id: page.id,
-        system: result.value,
-      });
-      continue;
-    }
-
-    if (page.type === "text") {
-      const currentContent = page.text?.content ?? "";
-      const { content, replacements } = replaceLinksInContent(currentContent, spellMap);
-      if (!replacements || content === currentContent) continue;
-
-      replacementCount += replacements;
-      pageUpdates.push({
-        _id: page.id,
-        "text.content": content,
-      });
-    }
+  if (target?.documentName !== "JournalEntry") {
+    ui.notifications.warn(game.i18n.localize(`${MODULE_ID}.notifications.invalidTarget`));
+    return;
   }
 
-  if (!pageUpdates.length) {
+  const spellPages = target.pages?.filter((page) => page.type === "spells") ?? [];
+  if (!spellPages.length) {
+    ui.notifications.info(game.i18n.localize(`${MODULE_ID}.notifications.noSpellPages`));
+    return;
+  }
+
+  let replacementCount = 0;
+  let updatedPages = 0;
+
+  for (const page of spellPages) {
+    const replacements = await replaceSpellListPage(page, spellMap, uuidNameCache);
+    if (!replacements) continue;
+
+    replacementCount += replacements;
+    updatedPages += 1;
+  }
+
+  if (!updatedPages) {
     ui.notifications.info(game.i18n.localize(`${MODULE_ID}.notifications.noChanges`));
     return;
   }
 
-  await journal.updateEmbeddedDocuments("JournalEntryPage", pageUpdates);
-
   ui.notifications.info(
     game.i18n.format(`${MODULE_ID}.notifications.success`, {
       count: replacementCount,
-      pages: pageUpdates.length,
+      pages: updatedPages,
     })
   );
 }

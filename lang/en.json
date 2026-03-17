@@ -14,6 +14,8 @@
       "selectPack": "Select a compendium first.",
       "missingPack": "The selected compendium could not be found.",
       "noSpellEntries": "The selected compendium does not contain spell entries.",
+      "noSpellPages": "This journal does not contain any spell-list pages.",
+      "invalidTarget": "Open a spell-list page or a journal containing spell-list pages.",
       "noChanges": "No spell links matched by name.",
       "success": "Updated {count} spell link(s) on {pages} page(s)."
     }
@@ -33,6 +35,8 @@
       "selectPack": "Select a compendium first.",
       "missingPack": "The selected compendium could not be found.",
       "noSpellEntries": "The selected compendium does not contain spell entries.",
+      "noSpellPages": "This journal does not contain any spell-list pages.",
+      "invalidTarget": "Open a spell-list page or a journal containing spell-list pages.",
       "noChanges": "No spell links matched by name.",
       "success": "Updated {count} spell link(s) on {pages} page(s)."
     }
