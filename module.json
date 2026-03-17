@@ -1,0 +1,38 @@
+{
+  "id": "spell-adopt",
+  "title": "Spell List Compendium Replacer",
+  "description": "Replace spell links in a journal's spell list with same-name spells from a selected compendium.",
+  "version": "1.0.0",
+  "compatibility": {
+    "minimum": "13",
+    "verified": "13"
+  },
+  "authors": [
+    {
+      "name": "WanderWal"
+    }
+  ],
+  "manifest": "https://raw.githubusercontent.com/WanderWal/spell-adopt/refs/heads/main/module.json",
+  "download": "https://github.com/WanderWal/spell-adopt/archive/refs/tags/1.0.0.zip",
+  "esmodules": [
+    "scripts/main.js"
+  ],
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    }
+  ],
+  "relationships": {
+    "systems": [
+      {
+        "id": "dnd5e",
+        "type": "system",
+        "compatibility": {
+          "minimum": "4.0.0"
+        }
+      }
+    ]
+  }
+}
