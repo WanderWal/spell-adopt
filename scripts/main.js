@@ -1,27 +1,4 @@
 const MODULE_ID = "spell-adopt";
-const SPELL_COLLECTION_KEYS = new Set([
-  "spell",
-  "spells",
-  "spelllist",
-  "spelllists",
-  "entries",
-  "items",
-  "results",
-  "documents",
-  "references",
-]);
-const SPELL_REFERENCE_KEYS = new Set([
-  "uuid",
-  "sourceid",
-  "pack",
-  "collection",
-  "documentcollection",
-  "id",
-  "_id",
-  "itemid",
-  "documentid",
-  "value",
-]);
 
 Hooks.on("getHeaderControlsApplicationV2", (app, controls) => {
   if (!Array.isArray(controls)) return;
@@ -69,11 +46,14 @@ function shouldShowControl(app) {
   if (isSpellListPage(document)) return true;
   if (document.documentName !== "JournalEntry") return false;
 
-  return document.pages?.some((page) => page.type === "spells") ?? false;
+  return document.pages?.some((page) => isSpellListPage(page)) ?? false;
 }
 
 function isSpellListPage(document) {
-  return document?.documentName === "JournalEntryPage" && document.type === "spells";
+  if (!document) return false;
+  const type = document.type ?? "";
+  return document.documentName === "JournalEntryPage"
+    && (type === "spells" || type === "dnd5e.spells");
 }
 
 class SpellCompendiumPickerApp extends foundry.applications.api.ApplicationV2 {
@@ -180,47 +160,6 @@ function normalizeName(name) {
   return String(name ?? "").trim().toLowerCase();
 }
 
-function parseCompendiumUuid(uuid) {
-  if (typeof uuid !== "string") return null;
-
-  const withType = uuid.match(/^Compendium\.(.+)\.Item\.([^\.]+)$/);
-  if (withType) {
-    return {
-      pack: withType[1],
-      id: withType[2],
-    };
-  }
-
-  const withoutType = uuid.match(/^Compendium\.(.+)\.([^\.]+)$/);
-  if (withoutType) {
-    return {
-      pack: withoutType[1],
-      id: withoutType[2],
-    };
-  }
-
-  return null;
-}
-
-function buildSpellReferenceFields(replacementUuid) {
-  const parsed = parseCompendiumUuid(replacementUuid);
-  if (!parsed) {
-    return { uuid: replacementUuid, sourceId: replacementUuid };
-  }
-
-  return {
-    uuid: replacementUuid,
-    sourceId: replacementUuid,
-    pack: parsed.pack,
-    collection: parsed.pack,
-    documentCollection: parsed.pack,
-    id: parsed.id,
-    _id: parsed.id,
-    itemId: parsed.id,
-    documentId: parsed.id,
-  };
-}
-
 function getSpellMapFromIndex(index, packCollection) {
   const map = new Map();
 
@@ -231,7 +170,7 @@ function getSpellMapFromIndex(index, packCollection) {
     const key = normalizeName(entry.name);
     if (!key || map.has(key)) continue;
 
-    map.set(key, `Compendium.${packCollection}.${entry._id}`);
+    map.set(key, `Compendium.${packCollection}.Item.${entry._id}`);
   }
 
   return map;
@@ -256,113 +195,6 @@ async function getSpellNameFromUuid(uuid, cache) {
   return resolvedName;
 }
 
-function isSpellCollectionKey(key) {
-  return SPELL_COLLECTION_KEYS.has(String(key ?? "").toLowerCase());
-}
-
-function isSpellReferenceKey(key) {
-  return SPELL_REFERENCE_KEYS.has(String(key ?? "").toLowerCase());
-}
-
-function objectLooksLikeSpellReference(value) {
-  if (!value || typeof value !== "object") return false;
-
-  return Object.keys(value).some((key) => isSpellReferenceKey(key))
-    || [value.name, value.label, value.title, value.spellName].some((entry) => typeof entry === "string" && entry.trim());
-}
-
-async function replaceSpellReferencesInValue(value, spellMap, cache, context = {}) {
-  const key = String(context.key ?? "");
-  const insideSpellCollection = Boolean(context.insideSpellCollection) || isSpellCollectionKey(key);
-
-  if (Array.isArray(value)) {
-    let replacements = 0;
-    const updated = [];
-
-    for (const entry of value) {
-      const result = await replaceSpellReferencesInValue(entry, spellMap, cache, {
-        key,
-        insideSpellCollection,
-      });
-      replacements += result.replacements;
-      updated.push(result.value);
-    }
-
-    return { value: updated, replacements };
-  }
-
-  if (value && typeof value === "object") {
-    const objectIsSpellReference = objectLooksLikeSpellReference(value);
-    const possibleName = value.name ?? value.label ?? value.title ?? value.spellName ?? null;
-    const matchedByName = spellMap.get(normalizeName(possibleName));
-
-    if (matchedByName && (insideSpellCollection || objectIsSpellReference)) {
-      let replacements = 0;
-      const updated = foundry.utils.deepClone(value);
-      const referenceFields = buildSpellReferenceFields(matchedByName);
-
-      for (const [key, fieldValue] of Object.entries(referenceFields)) {
-        if (updated[key] !== fieldValue) {
-          updated[key] = fieldValue;
-          replacements += 1;
-        }
-      }
-
-      if (replacements > 0) {
-        return { value: updated, replacements };
-      }
-    }
-
-    let replacements = 0;
-    const updated = {};
-
-    for (const [key, child] of Object.entries(value)) {
-      const result = await replaceSpellReferencesInValue(child, spellMap, cache, {
-        key,
-        insideSpellCollection,
-      });
-      replacements += result.replacements;
-      updated[key] = result.value;
-    }
-
-    return { value: updated, replacements };
-  }
-
-  if (typeof value !== "string") {
-    return { value, replacements: 0 };
-  }
-
-  let replacements = 0;
-  let updated = value;
-
-  const matchedByName = spellMap.get(normalizeName(updated));
-  if ((insideSpellCollection || isSpellReferenceKey(key)) && matchedByName && matchedByName !== updated) {
-    return { value: matchedByName, replacements: 1 };
-  }
-
-  updated = updated.replace(/@(UUID|Compendium)\[([^\]]+)\](?:\{([^}]+)\})?/gi, (match, _kind, _target, label) => {
-    if (!label) return match;
-    const replacementUuid = spellMap.get(normalizeName(label));
-    if (!replacementUuid) return match;
-
-    replacements += 1;
-    return `@UUID[${replacementUuid}]{${label}}`;
-  });
-
-  if (updated.startsWith("Compendium.")) {
-    const spellName = await getSpellNameFromUuid(updated, cache);
-    if (spellName) {
-      const replacementUuid = spellMap.get(normalizeName(spellName));
-      if (replacementUuid && replacementUuid !== updated) {
-        replacements += 1;
-        updated = replacementUuid;
-      }
-    }
-  }
-
-  return { value: updated, replacements };
-}
-
 async function getSpellMapForPack(packCollection) {
   const pack = game.packs.get(packCollection);
   if (!pack) {
@@ -382,21 +214,28 @@ async function getSpellMapForPack(packCollection) {
 }
 
 async function replaceSpellListPage(page, spellMap, uuidNameCache) {
-  const currentData = page.toObject();
-  const result = await replaceSpellReferencesInValue(currentData, spellMap, uuidNameCache, {
-    key: "page",
-    insideSpellCollection: false,
-  });
+  const existingUuids = [...(page.system?.spells ?? [])];
+  if (!existingUuids.length) return 0;
 
-  if (!result.replacements) return 0;
+  const newUuids = [];
+  let replacements = 0;
 
-  const updateData = foundry.utils.diffObject(currentData, result.value);
-  delete updateData._id;
+  for (const uuid of existingUuids) {
+    const spellName = await getSpellNameFromUuid(uuid, uuidNameCache);
+    const replacementUuid = spellName ? spellMap.get(normalizeName(spellName)) : null;
 
-  if (!Object.keys(updateData).length) return 0;
+    if (replacementUuid && replacementUuid !== uuid) {
+      newUuids.push(replacementUuid);
+      replacements++;
+    } else {
+      newUuids.push(uuid);
+    }
+  }
 
-  await page.update(updateData);
-  return result.replacements;
+  if (!replacements) return 0;
+
+  await page.update({ "system.spells": newUuids });
+  return replacements;
 }
 
 async function replaceSpellListTarget(target, packCollection) {
@@ -427,7 +266,7 @@ async function replaceSpellListTarget(target, packCollection) {
     return;
   }
 
-  const spellPages = target.pages?.filter((page) => page.type === "spells") ?? [];
+  const spellPages = target.pages?.filter((page) => isSpellListPage(page)) ?? [];
   if (!spellPages.length) {
     ui.notifications.info(game.i18n.localize(`${MODULE_ID}.notifications.noSpellPages`));
     return;
