@@ -1,4 +1,23 @@
 {
+  "spell-adopt": {
+    "button": {
+      "replace": "Replace Spells"
+    },
+    "picker": {
+      "title": "Select Spell Compendium",
+      "label": "Compendium",
+      "submit": "Replace",
+      "none": "No item compendiums available."
+    },
+    "notifications": {
+      "gmOnly": "Only a GM can run spell replacement.",
+      "selectPack": "Select a compendium first.",
+      "missingPack": "The selected compendium could not be found.",
+      "noSpellEntries": "The selected compendium does not contain spell entries.",
+      "noChanges": "No spell links matched by name.",
+      "success": "Updated {count} spell link(s) on {pages} page(s)."
+    }
+  },
   "spell-list-compendium-replacer": {
     "button": {
       "replace": "Replace Spells"

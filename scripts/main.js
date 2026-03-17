@@ -1,4 +1,4 @@
-const MODULE_ID = "spell-list-compendium-replacer";
+const MODULE_ID = "spell-adopt";
 
 Hooks.on("getHeaderControlsApplicationV2", (app, controls) => {
   if (!Array.isArray(controls)) return;
@@ -148,6 +148,28 @@ function normalizeName(name) {
   return String(name ?? "").trim().toLowerCase();
 }
 
+function parseCompendiumUuid(uuid) {
+  if (typeof uuid !== "string") return null;
+
+  const withType = uuid.match(/^Compendium\.(.+)\.Item\.([^\.]+)$/);
+  if (withType) {
+    return {
+      pack: withType[1],
+      id: withType[2],
+    };
+  }
+
+  const withoutType = uuid.match(/^Compendium\.(.+)\.([^\.]+)$/);
+  if (withoutType) {
+    return {
+      pack: withoutType[1],
+      id: withoutType[2],
+    };
+  }
+
+  return null;
+}
+
 function getSpellMapFromIndex(index, packCollection) {
   const map = new Map();
 
@@ -235,6 +257,51 @@ async function replaceSpellReferencesInValue(value, spellMap, cache) {
   }
 
   if (value && typeof value === "object") {
+    const possibleName = value.name ?? value.label ?? value.title ?? value.spellName ?? null;
+    const matchedByName = spellMap.get(normalizeName(possibleName));
+
+    if (matchedByName) {
+      let replacements = 0;
+      const updated = foundry.utils.deepClone(value);
+      const parsed = parseCompendiumUuid(matchedByName);
+
+      if (typeof updated.uuid === "string" && updated.uuid !== matchedByName) {
+        updated.uuid = matchedByName;
+        replacements += 1;
+      }
+
+      if (typeof updated.sourceId === "string" && updated.sourceId !== matchedByName) {
+        updated.sourceId = matchedByName;
+        replacements += 1;
+      }
+
+      if (parsed) {
+        if (typeof updated.pack === "string" && updated.pack !== parsed.pack) {
+          updated.pack = parsed.pack;
+          replacements += 1;
+        }
+
+        if (typeof updated.collection === "string" && updated.collection !== parsed.pack) {
+          updated.collection = parsed.pack;
+          replacements += 1;
+        }
+
+        if (typeof updated.id === "string" && updated.id !== parsed.id) {
+          updated.id = parsed.id;
+          replacements += 1;
+        }
+
+        if (typeof updated.itemId === "string" && updated.itemId !== parsed.id) {
+          updated.itemId = parsed.id;
+          replacements += 1;
+        }
+      }
+
+      if (replacements > 0) {
+        return { value: updated, replacements };
+      }
+    }
+
     let replacements = 0;
     const updated = {};
 
@@ -263,7 +330,7 @@ async function replaceSpellReferencesInValue(value, spellMap, cache) {
     return `@UUID[${replacementUuid}]{${label}}`;
   });
 
-  if (updated.startsWith("Compendium.") || updated.startsWith("Item.")) {
+  if (updated.startsWith("Compendium.")) {
     const spellName = await getSpellNameFromUuid(updated, cache);
     if (spellName) {
       const replacementUuid = spellMap.get(normalizeName(spellName));
